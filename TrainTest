@@ -1,0 +1,468 @@
+package com.example.geode;
+
+import com.alibaba.fastjson.JSON;
+import com.example.geode.train.TripBuilder;
+import com.example.geode.train.bean.*;
+import org.apache.geode.cache.CacheTransactionManager;
+import org.apache.geode.cache.CommitConflictException;
+import org.apache.geode.cache.Region;
+import org.apache.geode.cache.client.ClientCache;
+import org.apache.geode.cache.client.ClientCacheFactory;
+import org.apache.geode.cache.client.ClientRegionShortcut;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.junit4.SpringRunner;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+
+@RunWith(SpringRunner.class)
+@SpringBootTest
+public class TrainTest {
+
+    Logger logger = LoggerFactory.getLogger(TrainTest.class);
+
+    //缓存客户端
+    ClientCache cache = null;
+
+    //旅途Region
+    Region<String, TrainTrip> trainTripRegion = null;
+    //旅途站点
+    Region<String, TrainTripPoint> trainTripPointRegion = null;
+    //乘客Region
+    Region<String, Passenger> passengerRegion = null;
+    //车票Region
+    Region<String, Ticket> ticketRegion = null;
+
+    //模拟抢票需求，方便抢票
+    Region<String, SeckillInfo> seckillInfoRegion = null;
+
+    public static String TRIP = "G71";
+
+    @Before
+    public void contextLoads() {
+        cache = new ClientCacheFactory().addPoolLocator("localhost", 10334).create();
+        trainTripRegion = cache.<String, TrainTrip>createClientRegionFactory(ClientRegionShortcut.PROXY).create("TrainTrip");
+        trainTripPointRegion = cache.<String, TrainTripPoint>createClientRegionFactory(ClientRegionShortcut.PROXY).create("TrainTripPoint");
+        passengerRegion = cache.<String, Passenger>createClientRegionFactory(ClientRegionShortcut.PROXY).create("Passenger");
+        ticketRegion = cache.<String, Ticket>createClientRegionFactory(ClientRegionShortcut.PROXY).create("Ticket");
+        seckillInfoRegion = cache.<String, SeckillInfo>createClientRegionFactory(ClientRegionShortcut.PROXY).create("SeckillInfo");
+    }
+
+
+    /**
+     * 构建路途信息，过站点，车票数量等
+     */
+    @Test
+    public void buildTrip() {
+        // 北京站点
+        TrainTripPoint beiji = new TrainTripPoint();
+        beiji.setIndex(0);
+        beiji.setTicketNum(200);
+        beiji.setTrainTripPointName("北京");
+
+        //保定
+        TrainTripPoint baoding = new TrainTripPoint();
+        baoding.setIndex(1);
+        baoding.setTicketNum(200);
+        baoding.setTrainTripPointName("保定");
+
+        //石家庄
+        TrainTripPoint shijiazhuang = new TrainTripPoint();
+        shijiazhuang.setIndex(2);
+        shijiazhuang.setTicketNum(200);
+        shijiazhuang.setTrainTripPointName("石家庄");
+
+        //邢台
+        TrainTripPoint xingtai = new TrainTripPoint();
+        xingtai.setIndex(3);
+        xingtai.setTicketNum(200);
+        xingtai.setTrainTripPointName("邢台");
+
+        //邯郸
+        TrainTripPoint handan = new TrainTripPoint();
+        handan.setIndex(4);
+        handan.setTicketNum(200);
+        handan.setTrainTripPointName("邯郸");
+
+        //广州南
+        TrainTripPoint guangzhounan = new TrainTripPoint();
+        guangzhounan.setIndex(5);
+        guangzhounan.setTicketNum(200);
+        guangzhounan.setTrainTripPointName("广州南");
+
+
+        TripBuilder builder = new TripBuilder();
+
+        //将旅途站点添加到 trainTripPointRegion 缓存中 KEY 是 trainTripPointId
+        builder.setAddTripPiontListener(trainTripPoint -> {
+            trainTripPointRegion.put(trainTripPoint.getTrainTripPointId(), trainTripPoint);
+        });
+        builder.setTripName(TRIP);
+        builder.setTrainTripId(TRIP);
+        builder.setTotalPoint(6);
+        builder.addTripPiont(beiji)
+                .addTripPiont(baoding)
+                .addTripPiont(shijiazhuang)
+                .addTripPiont(xingtai)
+                .addTripPiont(handan)
+                .addTripPiont(guangzhounan);
+
+        //旅途
+        TrainTrip trainTrip = builder.get();
+        //将旅途放到  trainTripRegion 旅途缓存中。
+        trainTripRegion.put(trainTrip.getTrainTripId(), trainTrip);
+    }
+
+    //构建乘客
+    @Test
+    public void buildPassenger() {
+        for (int i = 1; i <= 300; i++) {
+            Passenger passenger = new Passenger();
+            String pid = "p_" + i;
+            passenger.setPassengerId(pid);
+            passenger.setPassengerName("乘客_" + i);
+            passengerRegion.put(pid, passenger);
+        }
+    }
+
+    @Test
+    public void buildSeckillInfo() {
+        for (int i = 1; i <= 300; i++) {
+            String pid = "p_" + i;
+            SeckillInfo seckillInfo = new SeckillInfo();
+            seckillInfo.setTrainTripId(TRIP);
+            seckillInfo.setPassengerId(pid);
+
+            int start = (int) (Math.random() * 6);
+            int end = (int) (Math.random() * 6);
+
+            while (end <= start) {
+                start = (int) (Math.random() * 6);
+                end = (int) (Math.random() * 6);
+                if (end < start) {
+                    int tmp = start;
+                    start = end;
+                    end = tmp;
+                }
+            }
+
+            List<String> passing = new ArrayList<>();
+            String startPoint = TRIP + "_" + start;
+            String endPoint = TRIP + "_" + end;
+            for (int k = start; k <= end; k++) {
+                String point = TRIP + "_" + k;
+                passing.add(point);
+            }
+            seckillInfo.setStartTrainTripPointId(startPoint);
+            seckillInfo.setEndTrainTripPointId(endPoint);
+            seckillInfo.setPassingTrainTripPointId(passing);
+            String sid = "s_" + i;
+            seckillInfoRegion.put(sid, seckillInfo);
+        }
+    }
+
+    @Test
+    public void reset() {
+        //清空信息，从新生成。
+        trainTripRegion.clear();
+        trainTripPointRegion.clear();
+        passengerRegion.clear();
+        ticketRegion.clear();
+        seckillInfoRegion.clear();
+        //构建旅途和票
+        buildTrip();
+        //构建乘客
+        buildPassenger();
+        //构建抢购需求
+        buildSeckillInfo();
+    }
+
+
+    // 单线程抢票
+    // 需要保证从 入站到出站都有票
+    @Test
+    public void synSeckill() {
+        reset();
+        //获取抢票需求列表
+        List<SeckillInfo> seckillInfoList = new ArrayList<>();
+        getSeckillInfoList(seckillInfoList);
+        for (SeckillInfo seckillInfo : seckillInfoList) {
+            singleSeckill(seckillInfo);
+        }
+        checkTicket();
+    }
+
+    //多线程抢票
+    @Test
+    public void asynSeckill() throws InterruptedException {
+        reset();
+        //获取抢票需求列表
+        List<SeckillInfo> seckillInfoList = new ArrayList<>();
+        getSeckillInfoList(seckillInfoList);
+        CountDownLatch wait = new CountDownLatch(1);
+        CountDownLatch count = new CountDownLatch(seckillInfoList.size());
+        for (SeckillInfo seckillInfo : seckillInfoList) {
+            new Thread(() -> {
+                try {
+                    wait.await();
+                    singleSeckill(seckillInfo);
+                    count.countDown();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }).start();
+        }
+        wait.countDown();
+        count.await();
+        logger.info("所有线程已经跑完");
+        checkTicket();
+    }
+
+    //多线程抢票
+    @Test
+    public void geodeSeckill() throws InterruptedException {
+        reset();
+        //获取抢票需求列表
+        List<SeckillInfo> seckillInfoList = new ArrayList<>();
+        getSeckillInfoList(seckillInfoList);
+        CountDownLatch wait = new CountDownLatch(1);
+        CountDownLatch count = new CountDownLatch(seckillInfoList.size());
+        for (SeckillInfo seckillInfo : seckillInfoList) {
+            new Thread(() -> {
+                try {
+                    wait.await();
+                    transaction(seckillInfo);
+                    count.countDown();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }).start();
+        }
+        wait.countDown();
+        count.await();
+        logger.info("所有线程已经跑完");
+        checkTicket();
+    }
+
+    /**
+     * 使用 Geode 事务
+     *
+     * @param seckillInfo
+     */
+    public void transaction(SeckillInfo seckillInfo) {
+        CacheTransactionManager txManager = cache.getCacheTransactionManager();
+        boolean retryTransaction = false;
+        do {
+            try {
+                txManager.begin();
+                //旅客ID
+                singleSeckill(seckillInfo);
+                txManager.commit();
+                retryTransaction = false;
+            } catch (CommitConflictException conflict) {
+                retryTransaction = true;
+                logger.info("抢票冲突..正在重试。");
+            } finally {
+                if (txManager.exists()) {
+                    txManager.rollback();
+                }
+            }
+        } while (retryTransaction);
+    }
+
+
+    //单次抢票
+    private void singleSeckill(SeckillInfo seckillInfo) {
+        //旅客ID
+        String passengerId = seckillInfo.getPassengerId();
+        Passenger passenger = passengerRegion.get(passengerId);
+
+        //旅途 ID
+        String trainTripId = seckillInfo.getTrainTripId();
+        TrainTrip trainTrip = trainTripRegion.get(trainTripId);
+
+        //
+        TrainTripPoint startTrainTripPoint = trainTripPointRegion.get(seckillInfo.getStartTrainTripPointId());
+        TrainTripPoint endTrainTripPoint = trainTripPointRegion.get(seckillInfo.getEndTrainTripPointId());
+
+        //会路过的站点
+        List<String> passing = seckillInfo.getPassingTrainTripPointId();
+
+        //是否已经购买过
+        boolean check = check(passengerId, trainTripId);
+        if (check) {
+            logger.info("用户" + passenger.getPassengerId() + " 已经购买过: " + startTrainTripPoint.getTrainTripPointName() + "到" + endTrainTripPoint.getTrainTripPointName() + " 车票");
+            return;
+        }
+
+        //检测路过站点是否有票
+        boolean hasTicket = isHasTicket(passing);
+        //无票
+        if (!hasTicket) {
+            logger.info(startTrainTripPoint.getTrainTripPointName() + "到" + endTrainTripPoint.getTrainTripPointName() + " 票已经售完");
+            return;
+        }
+
+        //减库存
+        reduceTicket(passing);
+        //生成车票信息
+        String ticketId = passengerId + "_" + trainTripId;
+        Ticket ticket = buildTicket(trainTrip, startTrainTripPoint, endTrainTripPoint, passing, ticketId);
+        passenger.addTicket(ticket);
+        ticketRegion.put(ticket.getTicketId(), ticket);
+        passengerRegion.put(passenger.getPassengerId(), passenger);
+        logger.info("用户" + passenger.getPassengerId() + " 抢到车票:" + startTrainTripPoint.getTrainTripPointName() + "到" + endTrainTripPoint.getTrainTripPointName());
+
+    }
+
+    private boolean check(String passengerId, String trainTripId) {
+        String ticketId = passengerId + "_" + trainTripId;
+        Ticket check = ticketRegion.get(ticketId);
+        if (null == check) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+
+
+    private void reduceTicket(List<String> passing) {
+        for (String trainTripPointId : passing) {
+            TrainTripPoint trainTripPoint = trainTripPointRegion.get(trainTripPointId);
+            Integer oldTicketNum = trainTripPoint.getTicketNum();
+            Integer num = oldTicketNum - 1;
+            trainTripPoint.setTicketNum(num);
+            trainTripPointRegion.put(trainTripPointId, trainTripPoint);
+        }
+    }
+
+    private Ticket buildTicket(TrainTrip trainTrip, TrainTripPoint startTrainTripPoint, TrainTripPoint endTrainTripPoint, List<String> passing, String ticketId) {
+        Ticket ticket = new Ticket();
+        ticket.setTicketId(ticketId);
+        ticket.setTripId(trainTrip.getTrainTripId());
+        ticket.setTripName(trainTrip.getTrainTripName());
+        ticket.setStartTrainTripPoint(startTrainTripPoint.getTrainTripPointName());
+        ticket.setEndTrainTripPoint(endTrainTripPoint.getTrainTripPointName());
+        ticket.setPassingTrainTripPoint(passing);
+        return ticket;
+    }
+
+
+    //过站是否有票
+    private boolean isHasTicket(List<String> passing) {
+        boolean hasTicket = true;
+        for (String trainTripPointId : passing) {
+            TrainTripPoint trainTripPoint = trainTripPointRegion.get(trainTripPointId);
+            Integer oldTicketNum = trainTripPoint.getTicketNum();
+            if (oldTicketNum == 0) {
+                logger.info(trainTripPoint.getTrainTripPointId() + " 站点票已经售完");
+                hasTicket = false;
+            }
+        }
+        return hasTicket;
+    }
+
+    //获取所有人的抢票需求
+    private void getSeckillInfoList(List<SeckillInfo> seckillInfoList) {
+        for (int i = 1; i <= 300; i++) {
+            String sid = "s_" + i;
+            SeckillInfo seckillInfo = seckillInfoRegion.get(sid);
+            seckillInfoList.add(seckillInfo);
+        }
+    }
+
+    @Test
+    public void getSeckillInfo() {
+        for (int i = 1; i <= 300; i++) {
+            String sid = "s_" + i;
+            SeckillInfo seckillInfo = seckillInfoRegion.get(sid);
+            logger.info(JSON.toJSONString(seckillInfo));
+        }
+    }
+
+    @Test
+    public void getPassenger() {
+        for (int i = 1; i <= 300; i++) {
+            String pid = "p_" + i;
+            Passenger passenger = passengerRegion.get(pid);
+            logger.info(JSON.toJSONString(passenger));
+        }
+    }
+
+    @Test
+    public void getTicket() {
+        for (int i = 1; i <= 300; i++) {
+            String pid = "p_" + i;
+            String ticketId = pid + "_" + TRIP;
+            Ticket ticket = ticketRegion.get(ticketId);
+            logger.info(JSON.toJSONString(ticket));
+        }
+    }
+
+
+    @Test
+    public void getTrainTrip() {
+        TrainTrip trainTrip = trainTripRegion.get(TRIP);
+        logger.info(JSON.toJSONString(trainTrip));
+    }
+
+    @Test
+    public void getTrainTripPoint() {
+        TrainTrip trainTrip = trainTripRegion.get(TRIP);
+        int total = trainTrip.getTotalPoint();
+        for (int i = 0; i < total; i++) {
+            TrainTripPoint point = trainTripPointRegion.get(TRIP + "_" + i);
+            logger.info("站点余票: "+JSON.toJSONString(point));
+        }
+    }
+
+    //检查是否超卖
+    @Test
+    public void checkTicket() {
+        //站点余票
+        getTrainTripPoint();
+        Map<String, Integer> map = new HashMap<>();
+        //遍历卖出的票，把所有站点的票加起来
+        for (int i = 1; i <= 300; i++) {
+            String pid = "p_" + i;
+            String ticketId = pid + "_" + TRIP;
+            Ticket ticket = ticketRegion.get(ticketId);
+            if (null != ticket) {
+                List<String> passing = ticket.getPassingTrainTripPoint();
+                passing.forEach(s -> {
+                    if (map.containsKey(s)) {
+                        int t = map.get(s);
+                        map.put(s, t + 1);
+                    } else {
+                        map.put(s, 1);
+                    }
+                });
+            }
+        }
+
+        //没有卖出的票
+        TrainTrip trainTrip = trainTripRegion.get(TRIP);
+        int total = trainTrip.getTotalPoint();
+        for (int i = 0; i < total; i++) {
+            TrainTripPoint point = trainTripPointRegion.get(TRIP + "_" + i);
+            String s = point.getTrainTripPointId();
+            //剩余的票
+            int num = point.getTicketNum();
+            if (map.containsKey(s)) {
+                int t = map.get(s);
+                map.put(s, t + num);
+            } else {
+                map.put(s, num);
+            }
+        }
+        logger.info("检测站点总票: " + JSON.toJSONString(map));
+    }
+}
